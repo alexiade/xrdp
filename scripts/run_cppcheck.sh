@@ -117,6 +117,7 @@ if [ -z "$CPPCHECK_FLAGS" ]; then
                     -I librfxcodec/src/neon \
                     -I librfxcodec/src/sse2 \
                     -I libxrdp \
+                    -I sesman/chansrv \
                     -I sesman/libsesman \
                     -I sesman/sesexec \
                     -I third_party \
