@@ -23,6 +23,7 @@
 #include "parse.h"
 
 /* these are the supported general types */
+#define XRDP_CB_NONE   0 /* nothing on the clipboard can be transferred */
 #define XRDP_CB_TEXT   1
 #define XRDP_CB_BITMAP 2
 #define XRDP_CB_FILE   3
@@ -36,6 +37,7 @@ struct clip_s2c /* server to client, pasting from linux app to mstsc */
     Atom property; /* XRDP_CLIP_PROPERTY_ATOM, _QT_SELECTION, ... */
     int xrdp_clip_type; /* XRDP_CB_TEXT, XRDP_CB_BITMAP, XRDP_CB_FILE, ... */
     int converted;
+    int in_request; /* a data request from the client awaits a response */
     Time clip_time;
 };
 
