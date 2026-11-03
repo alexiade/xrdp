@@ -48,6 +48,7 @@ sesman/sesman.ini
 stamp-h1
 tap-driver.sh
 test-driver
+tests/chansrv/test_chansrv
 tests/common/test_common
 tests/libipm/test_libipm
 tests/libxrdp/test_libxrdp
