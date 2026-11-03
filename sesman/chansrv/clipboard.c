@@ -176,13 +176,13 @@ x-special/gnome-copied-files
 #include "clipboard.h"
 #include "clipboard_file.h"
 #include "clipboard_common.h"
+#include "clipboard_dib.h"
 #include "xcommon.h"
 #include "chansrv_fuse.h"
 #include "ms-rdpeclip.h"
 #include "xrdp_constants.h"
 
 #define BMPFILEHEADER_LEN       14
-#define BMPINFOHEADER_LEN       40
 
 extern int g_cliprdr_chan_id;   /* in chansrv.c */
 
@@ -1129,6 +1129,7 @@ clipboard_process_data_response_for_image(struct stream *s,
 {
     XSelectionRequestEvent *lxev;
     int len;
+    int pixel_offset;
     struct stream *bmp_hs;
 
     LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_process_data_response_for_image: "
@@ -1141,6 +1142,18 @@ clipboard_process_data_response_for_image(struct stream *s,
     }
     if (g_clip_c2s.type != g_image_bmp_atom)
     {
+        return 0;
+    }
+
+    /* The pixels do not always follow a 40 byte BITMAPINFOHEADER directly:
+     * a BI_BITFIELDS bitmap (32-bit images from Windows) has colour masks
+     * in between, and palette-based bitmaps a colour table */
+    pixel_offset = clipboard_dib_pixel_offset(s->p, len);
+    if (pixel_offset < 0)
+    {
+        LOG(LOG_LEVEL_WARNING, "Clipboard image from the client is not a "
+            "valid DIB - not passed on");
+        clipboard_refuse_selection(lxev);
         return 0;
     }
 
@@ -1171,7 +1184,7 @@ clipboard_process_data_response_for_image(struct stream *s,
     out_uint32_le(bmp_hs, g_clip_c2s.total_bytes);
     out_uint16_le(bmp_hs, 0);
     out_uint16_le(bmp_hs, 0);
-    out_uint32_le(bmp_hs, BMPFILEHEADER_LEN + BMPINFOHEADER_LEN);
+    out_uint32_le(bmp_hs, BMPFILEHEADER_LEN + pixel_offset);
 
     /* Copy header and data to output stream */
     g_memcpy(g_clip_c2s.data, bmp_hs->data, BMPFILEHEADER_LEN);
