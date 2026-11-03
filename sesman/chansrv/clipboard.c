@@ -207,6 +207,8 @@ static Atom g_get_time_atom = 0;       /* XRDP_GET_TIME_ATOM */
 static Atom g_utf8_atom = 0;           /* UTF8_STRING */
 static Atom g_image_bmp_atom = 0;      /* image/bmp */
 static Atom g_image_png_atom = 0;      /* image/png */
+static Atom g_rtf_atom = 0;            /* text/rtf */
+static Atom g_rtf_app_atom = 0;        /* application/rtf */
 static Atom g_file_atom1 = 0;          /* text/uri-list */
 static Atom g_file_atom2 = 0;          /* x-special/gnome-copied-files */
 static Atom g_incr_atom = 0;           /* INCR */
@@ -247,6 +249,13 @@ static int g_file_group_descriptor_format_id = -1;
 /* Format ID assigned to "PNG" by the client, -1 if not offered */
 static int g_png_format_id = -1;
 
+/* Format ID assigned to "Rich Text Format" by the client, -1 if not
+ * offered */
+static int g_rtf_format_id = -1;
+
+/* The RTF target of the current X selection (text/rtf or application/rtf) */
+static Atom g_s2c_rtf_atom = 0;
+
 static char g_last_atom_name[256] = "";
 
 /*
@@ -259,7 +268,8 @@ enum
     CB_FORMAT_FILE_GROUP_DESCRIPTOR = 0xc0bc,
     /* Registered formats: the IDs are ours to choose - the client goes
      * by the names announced with them */
-    CB_FORMAT_PNG = 0xc0d0
+    CB_FORMAT_PNG = 0xc0d0,
+    CB_FORMAT_RTF = 0xc0d1
 };
 
 /* What the current X selection can be converted to (g_clip_s2c.targets) */
@@ -267,6 +277,7 @@ enum
 #define S2C_STRING              (1 << 1)
 #define S2C_BMP                 (1 << 2)
 #define S2C_PNG                 (1 << 3)
+#define S2C_RTF                 (1 << 4)
 
 /* Whether image/png and image/bmp can be converted into each other */
 #if defined(XRDP_PNG)
@@ -416,6 +427,8 @@ clipboard_init(void)
 
         g_image_bmp_atom = XInternAtom(g_display, "image/bmp", False);
         g_image_png_atom = XInternAtom(g_display, "image/png", False);
+        g_rtf_atom = XInternAtom(g_display, "text/rtf", False);
+        g_rtf_app_atom = XInternAtom(g_display, "application/rtf", False);
         g_file_atom1 = XInternAtom(g_display, "text/uri-list", False);
         g_file_atom2 = XInternAtom(g_display, "x-special/gnome-copied-files", False);
         g_incr_atom = XInternAtom(g_display, "INCR", False);
@@ -691,6 +704,10 @@ clipboard_send_format_announce(int xrdp_clip_type)
         {
             clipboard_out_format(s, CB_FORMAT_PNG, "PNG");
         }
+        if (targets & S2C_RTF)
+        {
+            clipboard_out_format(s, CB_FORMAT_RTF, "Rich Text Format");
+        }
     }
     size = (int)(s->p - holdp);
     size -= 4;
@@ -948,6 +965,7 @@ clipboard_process_format_announce(struct stream *s, int clip_msg_status,
     desc[0] = 0;
     g_num_formatIds = 0;
     g_png_format_id = -1;
+    g_rtf_format_id = -1;
     while (clip_msg_len > 3)
     {
         in_uint32_le(s, formatId);
@@ -991,6 +1009,10 @@ clipboard_process_format_announce(struct stream *s, int clip_msg_status,
                  g_strcmp(desc, "image/png") == 0)
         {
             g_png_format_id = formatId;
+        }
+        else if (g_strcmp(desc, "Rich Text Format") == 0)
+        {
+            g_rtf_format_id = formatId;
         }
     }
 
@@ -1127,6 +1149,27 @@ clipboard_s2c_send_image(Atom target, const char *data, int data_size)
 }
 
 /*****************************************************************************/
+/* Answer the client's request for RTF: the bytes as they are, with the
+ * terminating NUL Windows applications expect */
+static int
+clipboard_s2c_send_rtf(const char *data, int data_size)
+{
+    char *rtf;
+    int rv;
+
+    if (data == NULL || data_size < 1)
+    {
+        return clipboard_send_data_response_failed();
+    }
+    rtf = (char *) g_malloc(data_size + 1, 0);
+    g_memcpy(rtf, data, data_size);
+    rtf[data_size] = '\0';
+    rv = clipboard_send_data_response_for_image(rtf, data_size + 1);
+    g_free(rtf);
+    return rv;
+}
+
+/*****************************************************************************/
 /* sent from server to client
  * sent by recipient of CB_FORMAT_LIST; used to request data for one
  * of the formats that was listed in CB_FORMAT_LIST */
@@ -1195,6 +1238,13 @@ clipboard_process_data_request(struct stream *s, int clip_msg_status,
                 target = XA_STRING;
             }
             clipboard_s2c_request(CF_UNICODETEXT, XRDP_CB_TEXT, target);
+            break;
+        case CB_FORMAT_RTF:
+            if (g_clip_s2c.targets & S2C_RTF)
+            {
+                target = g_s2c_rtf_atom;
+            }
+            clipboard_s2c_request(CB_FORMAT_RTF, XRDP_CB_RTF, target);
             break;
         default:
             LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_process_data_request: unknown type %d",
@@ -1477,6 +1527,42 @@ clipboard_process_data_response_for_text(struct stream *s,
     return 0;
 }
 
+/**************************************************************************//**
+ * Process a CB_FORMAT_DATA_RESPONSE for an X client requesting RTF
+ *
+ * Rich Text Format is 7-bit text and is passed on as it is, without the
+ * terminating NUL(s) Windows puts on the clipboard.
+ *
+ * @param s Stream containing the RTF data
+ *
+ * @return Status
+ */
+static int
+clipboard_process_data_response_for_rtf(struct stream *s)
+{
+    XSelectionRequestEvent *lxev = &g_saved_selection_req_event;
+    int len;
+
+    len = (int)(s->end - s->p);
+    while (len > 0 && s->p[len - 1] == '\0')
+    {
+        --len;
+    }
+    if (len < 1)
+    {
+        clipboard_refuse_selection(lxev);
+        return 0;
+    }
+
+    g_free(g_clip_c2s.data);
+    g_clip_c2s.data = (char *) g_malloc(len, 0);
+    g_memcpy(g_clip_c2s.data, s->p, len);
+    g_clip_c2s.total_bytes = len;
+    g_clip_c2s.read_bytes_done = len;
+    clipboard_provide_selection_c2s(lxev, lxev->target);
+    return 0;
+}
+
 /*****************************************************************************/
 /* client to server */
 /* sent as a reply to CB_FORMAT_DATA_REQUEST; used to indicate whether
@@ -1518,6 +1604,10 @@ clipboard_process_data_response(struct stream *s, int clip_msg_status,
     {
         clipboard_process_data_response_for_file(s, clip_msg_status,
                 clip_msg_len);
+    }
+    else if (g_clip_c2s.xrdp_clip_type == XRDP_CB_RTF)
+    {
+        clipboard_process_data_response_for_rtf(s);
     }
     else
     {
@@ -1855,6 +1945,7 @@ clipboard_event_selection_notify(XEvent *xevent)
     int got_utf8;
     int got_bmp_image;
     int got_png_image;
+    Atom got_rtf;
     int targets;
     int send_format_announce;
     int answered;
@@ -1871,6 +1962,7 @@ clipboard_event_selection_notify(XEvent *xevent)
     got_utf8 = 0;
     got_bmp_image = 0;
     got_png_image = 0;
+    got_rtf = 0;
     targets = 0;
     got_file_atom = 0;
     send_format_announce = 0;
@@ -1955,6 +2047,11 @@ clipboard_event_selection_notify(XEvent *xevent)
                         else if (atom == g_image_png_atom)
                         {
                             got_png_image = 1;
+                        }
+                        else if (atom == g_rtf_atom ||
+                                 (atom == g_rtf_app_atom && got_rtf == 0))
+                        {
+                            got_rtf = atom;
                         }
                         else if ((atom == g_file_atom1) || (atom == g_file_atom2))
                         {
@@ -2065,6 +2162,19 @@ clipboard_event_selection_notify(XEvent *xevent)
                     }
                 }
             }
+            else if ((lxevent->target == g_rtf_atom) ||
+                     (lxevent->target == g_rtf_app_atom))
+            {
+                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_event_selection_notify: %s "
+                          "data_size %d", get_atom_text(lxevent->target),
+                          data_size);
+                if ((g_clip_s2c.incr_in_progress == 0) && (data_size > 0) &&
+                        (g_cfg->restrict_outbound_clipboard & CLIP_RESTRICT_TEXT) == 0)
+                {
+                    clipboard_s2c_send_rtf(data, data_size);
+                    answered = 1;
+                }
+            }
             else if (lxevent->target == g_file_atom1)
             {
                 LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_event_selection_notify: text/uri-list "
@@ -2150,7 +2260,8 @@ clipboard_event_selection_notify(XEvent *xevent)
         }
 
     }
-    else if (got_utf8 || got_string || got_bmp_image || got_png_image)
+    else if (got_utf8 || got_string || got_bmp_image || got_png_image ||
+             got_rtf != 0)
     {
         /* Everything the selection offers is announced together - text
          * and an image, say, from a browser */
@@ -2170,6 +2281,19 @@ clipboard_event_selection_notify(XEvent *xevent)
                  * Use echo foo | xclip -selection clipboard -noutf8 to reproduce it.
                  */
                 targets |= got_utf8 ? S2C_UTF8 : S2C_STRING;
+            }
+        }
+        if (got_rtf != 0)
+        {
+            if (g_cfg->restrict_outbound_clipboard & CLIP_RESTRICT_TEXT)
+            {
+                LOG(LOG_LEVEL_DEBUG,
+                    "outbound clipboard(rtf) is restricted because of config");
+            }
+            else
+            {
+                targets |= S2C_RTF;
+                g_s2c_rtf_atom = got_rtf;
             }
         }
         if (got_bmp_image || got_png_image)
@@ -2201,9 +2325,13 @@ clipboard_event_selection_notify(XEvent *xevent)
             {
                 g_clip_s2c.type = g_image_bmp_atom;
             }
-            else
+            else if (targets & S2C_PNG)
             {
                 g_clip_s2c.type = g_image_png_atom;
+            }
+            else
+            {
+                g_clip_s2c.type = g_s2c_rtf_atom;
             }
             g_clip_s2c.xrdp_clip_type =
                 (targets & (S2C_UTF8 | S2C_STRING)) ? XRDP_CB_TEXT : XRDP_CB_BITMAP;
@@ -2359,6 +2487,15 @@ clipboard_event_selection_request(XEvent *xevent)
         {
             LOG_DEVEL(LOG_LEVEL_DEBUG, "  reporting image/png");
             atom_buf[atom_count] = g_image_png_atom;
+            atom_count++;
+        }
+        if (g_rtf_format_id >= 0 &&
+                (g_cfg->restrict_inbound_clipboard & CLIP_RESTRICT_TEXT) == 0)
+        {
+            LOG_DEVEL(LOG_LEVEL_DEBUG, "  reporting text/rtf");
+            atom_buf[atom_count] = g_rtf_atom;
+            atom_count++;
+            atom_buf[atom_count] = g_rtf_app_atom;
             atom_count++;
         }
         if (clipboard_find_format_id(g_file_group_descriptor_format_id) >= 0 &&
@@ -2519,6 +2656,32 @@ clipboard_event_selection_request(XEvent *xevent)
             g_clip_c2s.format_id = (g_png_format_id >= 0) ? g_png_format_id
                                    : CF_DIB;
             clipboard_send_data_request(g_clip_c2s.format_id);
+        }
+        return 0;
+    }
+    else if ((lxev->target == g_rtf_atom) || (lxev->target == g_rtf_app_atom))
+    {
+        LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_event_selection_request: %s",
+                  get_atom_text(lxev->target));
+        if (g_cfg->restrict_inbound_clipboard & CLIP_RESTRICT_TEXT)
+        {
+            LOG(LOG_LEVEL_DEBUG,
+                "inbound clipboard %s is restricted because of config",
+                get_atom_text(lxev->target));
+            clipboard_refuse_selection(lxev);
+        }
+        else if (g_rtf_format_id < 0)
+        {
+            clipboard_refuse_selection(lxev);
+        }
+        else
+        {
+            g_memcpy(&g_saved_selection_req_event, lxev,
+                     sizeof(g_saved_selection_req_event));
+            g_clip_c2s.type = lxev->target;
+            g_clip_c2s.xrdp_clip_type = XRDP_CB_RTF;
+            g_clip_c2s.format_id = g_rtf_format_id;
+            clipboard_send_data_request(g_rtf_format_id);
         }
         return 0;
     }
@@ -2730,6 +2893,11 @@ clipboard_event_property_notify(XEvent *xevent)
                 g_clip_s2c.xrdp_clip_type = XRDP_CB_BITMAP;
                 clipboard_s2c_send_image(g_clip_s2c.type, g_clip_s2c.data,
                                          g_clip_s2c.total_bytes);
+            }
+            else if ((g_clip_s2c.type == g_rtf_atom) ||
+                     (g_clip_s2c.type == g_rtf_app_atom))
+            {
+                clipboard_s2c_send_rtf(g_clip_s2c.data, g_clip_s2c.total_bytes);
             }
             else if ((g_clip_s2c.type == XA_STRING) ||
                      (g_clip_s2c.type == g_utf8_atom))
