@@ -47,4 +47,26 @@
 int
 clipboard_dib_pixel_offset(const char *dib, int dib_len);
 
+#if defined(XRDP_PNG)
+/**
+ * Convert a packed DIB to a PNG image
+ *
+ * Handles what Windows puts on the clipboard: 1, 2, 4 and 8 bits per
+ * pixel with a colour table, 16 and 32 bits as BI_RGB or with colour masks
+ * (BI_BITFIELDS, BI_ALPHABITFIELDS), 24 bits, bottom-up and top-down. A
+ * BI_PNG bitmap is returned as the PNG it contains. Alpha is kept when
+ * the header has an alpha mask and at least one pixel is not fully
+ * transparent - Windows often leaves the alpha bytes at zero.
+ *
+ * @param dib Packed DIB (CF_DIB, CF_DIBV5)
+ * @param dib_len Number of bytes at dib
+ * @param[out] png PNG data on success, to be freed with g_free()
+ * @param[out] png_len Number of bytes at *png
+ * @return 0 on success, -1 if the DIB is invalid, unsupported (RLE, JPEG)
+ *         or too large, or the conversion failed
+ */
+int
+clipboard_dib_to_png(const char *dib, int dib_len, char **png, int *png_len);
+#endif
+
 #endif /* CLIPBOARD_DIB_H */

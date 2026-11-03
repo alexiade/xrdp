@@ -206,6 +206,7 @@ static Atom g_secondary_atom = 0;      /* SECONDARY */
 static Atom g_get_time_atom = 0;       /* XRDP_GET_TIME_ATOM */
 static Atom g_utf8_atom = 0;           /* UTF8_STRING */
 static Atom g_image_bmp_atom = 0;      /* image/bmp */
+static Atom g_image_png_atom = 0;      /* image/png */
 static Atom g_file_atom1 = 0;          /* text/uri-list */
 static Atom g_file_atom2 = 0;          /* x-special/gnome-copied-files */
 static Atom g_incr_atom = 0;           /* INCR */
@@ -252,6 +253,9 @@ static int g_num_formatIds = 0;
 
 /* Format ID assigned to "FileGroupDescriptorW" by the client */
 static int g_file_group_descriptor_format_id = -1;
+
+/* Format ID assigned to "PNG" by the client, -1 if not offered */
+static int g_png_format_id = -1;
 
 static char g_last_atom_name[256] = "";
 
@@ -404,6 +408,7 @@ clipboard_init(void)
         g_utf8_atom = XInternAtom(g_display, "UTF8_STRING", False);
 
         g_image_bmp_atom = XInternAtom(g_display, "image/bmp", False);
+        g_image_png_atom = XInternAtom(g_display, "image/png", False);
         g_file_atom1 = XInternAtom(g_display, "text/uri-list", False);
         g_file_atom2 = XInternAtom(g_display, "x-special/gnome-copied-files", False);
         g_incr_atom = XInternAtom(g_display, "INCR", False);
@@ -978,6 +983,7 @@ clipboard_process_format_announce(struct stream *s, int clip_msg_status,
 
     desc[0] = 0;
     g_num_formatIds = 0;
+    g_png_format_id = -1;
     while (clip_msg_len > 3)
     {
         in_uint32_le(s, formatId);
@@ -1014,6 +1020,13 @@ clipboard_process_format_announce(struct stream *s, int clip_msg_status,
         if (g_strcmp(desc, "FileGroupDescriptorW") == 0)
         {
             g_file_group_descriptor_format_id = formatId;
+        }
+        /* Registered by browsers, Office and the Snipping Tool for a
+         * PNG file of the image - passed on to X clients as is */
+        else if (g_strcmp(desc, "PNG") == 0 ||
+                 g_strcmp(desc, "image/png") == 0)
+        {
+            g_png_format_id = formatId;
         }
     }
 
@@ -1238,6 +1251,53 @@ clipboard_process_data_request(struct stream *s, int clip_msg_status,
 }
 
 /**************************************************************************//**
+ * Process a CB_FORMAT_DATA_RESPONSE for an X client requesting image/png
+ *
+ * The client sent either its own PNG (a registered "PNG" format), which
+ * is passed on as it is, or a DIB, which is converted.
+ *
+ * @param s Stream containing the image data
+ * @param len Number of bytes of image data in the stream
+ *
+ * @return Status
+ */
+static int
+clipboard_process_data_response_for_png(struct stream *s, int len)
+{
+    XSelectionRequestEvent *lxev = &g_saved_selection_req_event;
+    char *png = NULL;
+    int png_len = 0;
+
+    if (g_clip_c2s.format_id != CF_DIB)
+    {
+        png = (char *) g_malloc(len, 0);
+        g_memcpy(png, s->p, len);
+        png_len = len;
+    }
+#if defined(XRDP_PNG)
+    else if (clipboard_dib_to_png(s->p, len, &png, &png_len) != 0)
+    {
+        LOG(LOG_LEVEL_WARNING, "Clipboard image from the client could not "
+            "be converted to PNG");
+        png = NULL;
+    }
+#endif
+
+    if (png == NULL)
+    {
+        clipboard_refuse_selection(lxev);
+        return 0;
+    }
+
+    g_free(g_clip_c2s.data);
+    g_clip_c2s.data = png;
+    g_clip_c2s.total_bytes = png_len;
+    g_clip_c2s.read_bytes_done = png_len;
+    clipboard_provide_selection_c2s(lxev, lxev->target);
+    return 0;
+}
+
+/**************************************************************************//**
  * Process a CB_FORMAT_DATA_RESPONSE for an X client requesting an image
  *
  * @param s Stream containing CLIPRDR_FILELIST ([MS-RDPECLIP])
@@ -1262,10 +1322,17 @@ clipboard_process_data_response_for_image(struct stream *s,
     len = (int)(s->end - s->p);
     if (len < 1)
     {
+        clipboard_refuse_selection(lxev);
         return 0;
+    }
+    if (g_clip_c2s.type == g_image_png_atom)
+    {
+        return clipboard_process_data_response_for_png(s, len);
     }
     if (g_clip_c2s.type != g_image_bmp_atom)
     {
+        /* The X client must not be left waiting */
+        clipboard_refuse_selection(lxev);
         return 0;
     }
 
@@ -2323,6 +2390,25 @@ clipboard_event_selection_notify(XEvent *xevent)
 }
 
 /*****************************************************************************/
+/* Can an X client get the client's image as image/png? Yes if the client
+ * offers a PNG, or a DIB we can convert */
+static int
+clipboard_c2s_png_available(void)
+{
+    if (g_png_format_id >= 0)
+    {
+        return 1;
+    }
+#if defined(XRDP_PNG)
+    if (clipboard_find_format_id(CF_DIB) >= 0)
+    {
+        return 1;
+    }
+#endif
+    return 0;
+}
+
+/*****************************************************************************/
 /* returns error
    process the SelectionRequest X event, uses XSelectionRequestEvent
    typedef struct {
@@ -2346,7 +2432,7 @@ static int
 clipboard_event_selection_request(XEvent *xevent)
 {
     XSelectionRequestEvent *lxev;
-    Atom atom_buf[10];
+    Atom atom_buf[16];
     Atom type;
     int atom_count;
     int fmt;
@@ -2398,6 +2484,14 @@ clipboard_event_selection_request(XEvent *xevent)
         {
             LOG_DEVEL(LOG_LEVEL_DEBUG, "  reporting image/bmp");
             atom_buf[atom_count] = g_image_bmp_atom;
+            atom_count++;
+        }
+        /* Most X applications paste images as image/png only */
+        if (clipboard_c2s_png_available() &&
+                (g_cfg->restrict_inbound_clipboard & CLIP_RESTRICT_IMAGE) == 0)
+        {
+            LOG_DEVEL(LOG_LEVEL_DEBUG, "  reporting image/png");
+            atom_buf[atom_count] = g_image_png_atom;
             atom_count++;
         }
         if (clipboard_find_format_id(g_file_group_descriptor_format_id) >= 0 &&
@@ -2524,10 +2618,42 @@ clipboard_event_selection_request(XEvent *xevent)
                      sizeof(g_saved_selection_req_event));
             g_clip_c2s.type = g_image_bmp_atom;
             g_clip_c2s.xrdp_clip_type = XRDP_CB_BITMAP;
+            g_clip_c2s.format_id = CF_DIB;
             clipboard_send_data_request(CF_DIB);
         }
         return 0;
 
+    }
+    else if (lxev->target == g_image_png_atom)
+    {
+        LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_event_selection_request: image/png");
+        if (g_cfg->restrict_inbound_clipboard & CLIP_RESTRICT_IMAGE)
+        {
+            LOG(LOG_LEVEL_DEBUG,
+                "inbound clipboard image/png is restricted because of config");
+            clipboard_refuse_selection(lxev);
+        }
+        else if ((g_clip_c2s.type == lxev->target) && g_clip_c2s.converted)
+        {
+            clipboard_provide_selection_c2s(lxev, lxev->target);
+        }
+        else if (!clipboard_c2s_png_available())
+        {
+            clipboard_refuse_selection(lxev);
+        }
+        else
+        {
+            /* The client's own PNG if it has one, else its DIB, which is
+             * converted when it arrives */
+            g_memcpy(&g_saved_selection_req_event, lxev,
+                     sizeof(g_saved_selection_req_event));
+            g_clip_c2s.type = g_image_png_atom;
+            g_clip_c2s.xrdp_clip_type = XRDP_CB_BITMAP;
+            g_clip_c2s.format_id = (g_png_format_id >= 0) ? g_png_format_id
+                                   : CF_DIB;
+            clipboard_send_data_request(g_clip_c2s.format_id);
+        }
+        return 0;
     }
     else if (lxev->target == g_file_atom1)
     {
