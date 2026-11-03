@@ -22,3 +22,8 @@ test_chansrv_CFLAGS = \
 test_chansrv_LDADD = \
     $(top_builddir)/sesman/chansrv/clipboard_dib.o \
     @CHECK_LIBS@
+
+if XRDP_PNG
+AM_CPPFLAGS += -DXRDP_PNG $(LIBPNG_CFLAGS)
+test_chansrv_LDADD += $(LIBPNG_LIBS)
+endif

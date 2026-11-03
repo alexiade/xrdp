@@ -136,6 +136,10 @@ AC_ARG_ENABLE(fuse, AS_HELP_STRING([--enable-fuse],
               [Build fuse(clipboard file / drive redir) (default: no)]),
               [], [enable_fuse=no])
 AM_CONDITIONAL(XRDP_FUSE, [test x$enable_fuse = xyes])
+AC_ARG_ENABLE(png, AS_HELP_STRING([--enable-png],
+              [Use libpng to offer clipboard images as PNG (default: no)]),
+              [], [enable_png=no])
+AM_CONDITIONAL(XRDP_PNG, [test x$enable_png = xyes])
 AC_ARG_ENABLE(xrdpvr, AS_HELP_STRING([--enable-xrdpvr],
               [Build xrdpvr module (default: no)]),
               [], [enable_xrdpvr=no])
@@ -499,6 +503,13 @@ then
     [AC_MSG_ERROR([please install libfuse3-dev or fuse3-devel])])
 fi
 
+# checking for libpng
+if test "x$enable_png" = "xyes"
+then
+  PKG_CHECK_MODULES([LIBPNG], [libpng >= 1.6.29], [],
+    [AC_MSG_ERROR([please install libpng-dev or libpng-devel])])
+fi
+
 # checking for fdk aac
 if test "x$enable_fdkaac" = "xyes"
 then
@@ -740,6 +751,7 @@ echo "  accel                           $enable_accel"
 echo "  painter                         $enable_painter"
 echo "  pixman                          $enable_pixman"
 echo "  fuse                            $enable_fuse"
+echo "  png (clipboard images)          $enable_png"
 echo "  ipv6                            $enable_ipv6"
 echo "  ipv6only                        $enable_ipv6only"
 echo "  vsock                           $enable_vsock"
