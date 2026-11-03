@@ -5,5 +5,6 @@
 #include <check.h>
 
 Suite *make_suite_test_clipboard_dib(void);
+Suite *make_suite_test_clipboard_html(void);
 
 #endif /* TEST_CHANSRV_H */
