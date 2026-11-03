@@ -38,6 +38,8 @@ struct clip_s2c /* server to client, pasting from linux app to mstsc */
     int xrdp_clip_type; /* XRDP_CB_TEXT, XRDP_CB_BITMAP, XRDP_CB_FILE, ... */
     int converted;
     int in_request; /* a data request from the client awaits a response */
+    int targets; /* what the X selection can be converted to (S2C_*) */
+    int format_id; /* the clipboard format the client asked for */
     Time clip_time;
 };
 

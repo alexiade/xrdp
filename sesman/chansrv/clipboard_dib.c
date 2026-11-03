@@ -517,4 +517,79 @@ clipboard_dib_to_png(const char *dib, int dib_len, char **png, int *png_len)
     return rv;
 }
 
+/*****************************************************************************/
+static void
+put_uint32_le(unsigned char *p, unsigned int v)
+{
+    p[0] = v & 0xff;
+    p[1] = (v >> 8) & 0xff;
+    p[2] = (v >> 16) & 0xff;
+    p[3] = (v >> 24) & 0xff;
+}
+
+/*****************************************************************************/
+int
+clipboard_png_to_dib(const char *png, int png_len, char **dib, int *dib_len)
+{
+    static const png_color white = { 0xff, 0xff, 0xff };
+    png_image image;
+    unsigned char *out;
+    unsigned int stride;
+    unsigned long long size;
+
+    if (png == NULL || dib == NULL || dib_len == NULL || png_len < 8)
+    {
+        return -1;
+    }
+
+    memset(&image, 0, sizeof(image));
+    image.version = PNG_IMAGE_VERSION;
+    if (!png_image_begin_read_from_memory(&image, png, (size_t)png_len))
+    {
+        return -1;
+    }
+    if (image.width < 1 || image.height < 1 ||
+            image.width > DIB_MAX_DIMENSION ||
+            image.height > DIB_MAX_DIMENSION ||
+            (unsigned long long)image.width * image.height > DIB_MAX_PIXELS)
+    {
+        png_image_free(&image);
+        return -1;
+    }
+
+    /* 24-bit rows, each padded to a multiple of 4 bytes */
+    stride = ((image.width * 24 + 31) / 32) * 4;
+    size = BITMAPINFOHEADER_SIZE + (unsigned long long)stride * image.height;
+    out = (unsigned char *)calloc(1, (size_t)size);
+    if (out == NULL)
+    {
+        png_image_free(&image);
+        return -1;
+    }
+
+    put_uint32_le(out, BITMAPINFOHEADER_SIZE);       /* biSize */
+    put_uint32_le(out + 4, image.width);             /* biWidth */
+    put_uint32_le(out + 8, image.height);            /* biHeight: bottom-up */
+    out[12] = 1;                                      /* biPlanes */
+    out[14] = 24;                                     /* biBitCount */
+    put_uint32_le(out + 16, DIB_BI_RGB);             /* biCompression */
+    put_uint32_le(out + 20, stride * image.height);  /* biSizeImage */
+
+    /* libpng composes onto the background when the format has no alpha,
+     * writes BGR as a DIB wants it, and with a negative row stride the
+     * last row first - padding left alone */
+    image.format = PNG_FORMAT_BGR;
+    if (!png_image_finish_read(&image, &white, out + BITMAPINFOHEADER_SIZE,
+                               -(png_int_32)stride, NULL))
+    {
+        png_image_free(&image);
+        free(out);
+        return -1;
+    }
+
+    *dib = (char *)out;
+    *dib_len = (int)size;
+    return 0;
+}
+
 #endif /* XRDP_PNG */

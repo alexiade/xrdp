@@ -67,6 +67,25 @@ clipboard_dib_pixel_offset(const char *dib, int dib_len);
  */
 int
 clipboard_dib_to_png(const char *dib, int dib_len, char **png, int *png_len);
+
+/**
+ * Convert a PNG image to a packed DIB (CF_DIB)
+ *
+ * The DIB is 24 bits per pixel, bottom-up, with a BITMAPINFOHEADER - what
+ * every Windows application reads. Transparent areas are composited onto
+ * white: most Windows applications ignore the alpha of a CF_DIB, and
+ * would show them black. (Alpha survives in the PNG, which is offered to
+ * the client as well.)
+ *
+ * @param png PNG data
+ * @param png_len Number of bytes at png
+ * @param[out] dib DIB on success, to be freed with g_free()
+ * @param[out] dib_len Number of bytes at *dib
+ * @return 0 on success, -1 if the PNG is invalid or too large, or the
+ *         conversion failed
+ */
+int
+clipboard_png_to_dib(const char *png, int png_len, char **dib, int *dib_len);
 #endif
 
 #endif /* CLIPBOARD_DIB_H */

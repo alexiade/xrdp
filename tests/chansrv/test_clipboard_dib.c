@@ -440,6 +440,96 @@ START_TEST(test_png_rejects)
 }
 END_TEST
 
+/*****************************************************************************/
+/* PNG back to a DIB: 24 bits, bottom-up, rows padded */
+START_TEST(test_png_to_dib_round_trip)
+{
+    static const unsigned char pixels[] =
+    {
+        3, 2, 1,     6, 5, 4,     9, 8, 7,      0, 0, 0,
+        30, 20, 10,  60, 50, 40,  90, 80, 70,   0, 0, 0
+    };
+    char *png = NULL;
+    char *out = NULL;
+    int png_len = 0;
+    int out_len = 0;
+    const unsigned char *o;
+
+    make_info_header(40, 24, 0, 0);
+    put_uint32_le(dib + 4, 3);
+    put_uint32_le(dib + 8, (unsigned int)(-2)); /* top-down */
+    memcpy(dib + 40, pixels, sizeof(pixels));
+    ck_assert_int_eq(clipboard_dib_to_png((const char *)dib, 40 + 24,
+                                          &png, &png_len), 0);
+    ck_assert_int_eq(clipboard_png_to_dib(png, png_len, &out, &out_len), 0);
+    free(png);
+
+    o = (const unsigned char *)out;
+    ck_assert_int_eq(out_len, 40 + 2 * 12);
+    ck_assert_int_eq(clipboard_dib_pixel_offset(out, out_len), 40);
+    ck_assert_uint_eq(o[4], 3);     /* width */
+    ck_assert_uint_eq(o[8], 2);     /* height, positive: bottom-up */
+    ck_assert_uint_eq(o[14], 24);   /* bits per pixel */
+    /* The bottom row comes first now */
+    ck_assert_int_eq(memcmp(o + 40, pixels + 12, 9), 0);
+    ck_assert_int_eq(memcmp(o + 52, pixels, 9), 0);
+    free(out);
+}
+END_TEST
+
+/*****************************************************************************/
+/* Transparency becomes white in a DIB */
+START_TEST(test_png_to_dib_transparent_is_white)
+{
+    /* BGRA: fully transparent blue, opaque red */
+    static const unsigned char pixels[] =
+    {
+        0xff, 0x00, 0x00, 0x00,   0x00, 0x00, 0xff, 0xff
+    };
+    char *png = NULL;
+    char *out = NULL;
+    int png_len = 0;
+    int out_len = 0;
+    const unsigned char *o;
+
+    make_info_header(124, 32, 3, 0);
+    put_uint32_le(dib + 4, 2);
+    put_uint32_le(dib + 8, 1);
+    put_uint32_le(dib + 40, 0x00ff0000);
+    put_uint32_le(dib + 44, 0x0000ff00);
+    put_uint32_le(dib + 48, 0x000000ff);
+    put_uint32_le(dib + 52, 0xff000000);
+    memcpy(dib + 124, pixels, sizeof(pixels));
+    ck_assert_int_eq(clipboard_dib_to_png((const char *)dib, 124 + 8,
+                                          &png, &png_len), 0);
+    ck_assert_int_eq(clipboard_png_to_dib(png, png_len, &out, &out_len), 0);
+    free(png);
+
+    o = (const unsigned char *)out + 40;
+    ck_assert_uint_eq(o[0], 0xff);  /* white, BGR */
+    ck_assert_uint_eq(o[1], 0xff);
+    ck_assert_uint_eq(o[2], 0xff);
+    ck_assert_uint_eq(o[3], 0x00);  /* red */
+    ck_assert_uint_eq(o[4], 0x00);
+    ck_assert_uint_eq(o[5], 0xff);
+    free(out);
+}
+END_TEST
+
+/*****************************************************************************/
+START_TEST(test_png_to_dib_rejects)
+{
+    static const char not_png[] = "this is not a PNG file at all";
+    char *out = NULL;
+    int out_len = 0;
+
+    ck_assert_int_eq(clipboard_png_to_dib(not_png, sizeof(not_png),
+                                          &out, &out_len), -1);
+    ck_assert_int_eq(clipboard_png_to_dib(not_png, 4, &out, &out_len), -1);
+    ck_assert_int_eq(clipboard_png_to_dib(NULL, 100, &out, &out_len), -1);
+}
+END_TEST
+
 #endif /* XRDP_PNG */
 
 /*****************************************************************************/
@@ -479,6 +569,12 @@ make_suite_test_clipboard_dib(void)
     tcase_add_test(tc, test_png_v5_alpha);
     tcase_add_test(tc, test_png_bi_png);
     tcase_add_test(tc, test_png_rejects);
+
+    tc = tcase_create("png_to_dib");
+    suite_add_tcase(s, tc);
+    tcase_add_test(tc, test_png_to_dib_round_trip);
+    tcase_add_test(tc, test_png_to_dib_transparent_is_white);
+    tcase_add_test(tc, test_png_to_dib_rejects);
 #endif
 
     return s;
