@@ -14,13 +14,15 @@ check_PROGRAMS = test_chansrv
 test_chansrv_SOURCES = \
     test_chansrv.h \
     test_chansrv_main.c \
-    test_clipboard_dib.c
+    test_clipboard_dib.c \
+    test_clipboard_html.c
 
 test_chansrv_CFLAGS = \
     @CHECK_CFLAGS@
 
 test_chansrv_LDADD = \
     $(top_builddir)/sesman/chansrv/clipboard_dib.o \
+    $(top_builddir)/sesman/chansrv/clipboard_html.o \
     @CHECK_LIBS@
 
 if XRDP_PNG

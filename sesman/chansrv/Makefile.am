@@ -61,6 +61,8 @@ xrdp_chansrv_SOURCES = \
   clipboard_common.h \
   clipboard_dib.c \
   clipboard_dib.h \
+  clipboard_html.c \
+  clipboard_html.h \
   clipboard_file.c \
   clipboard_file.h \
   devredir.c \

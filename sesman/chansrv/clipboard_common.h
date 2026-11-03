@@ -28,6 +28,7 @@
 #define XRDP_CB_BITMAP 2
 #define XRDP_CB_FILE   3
 #define XRDP_CB_RTF    4 /* Rich Text Format, passed through as is */
+#define XRDP_CB_HTML   5 /* HTML: Windows' CF_HTML <-> X's text/html */
 
 struct clip_s2c /* server to client, pasting from linux app to mstsc */
 {

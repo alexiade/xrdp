@@ -25,6 +25,10 @@ int main (void)
     {
         srunner_add_suite(sr, make_suite_test_clipboard_dib());
     }
+    if (run_suite("clipboard_html"))
+    {
+        srunner_add_suite(sr, make_suite_test_clipboard_html());
+    }
 
     srunner_set_tap(sr, "-");
     srunner_run_all (sr, CK_ENV);
