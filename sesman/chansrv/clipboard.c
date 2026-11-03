@@ -266,8 +266,24 @@ static char g_last_atom_name[256] = "";
 
 enum
 {
-    CB_FORMAT_FILE_GROUP_DESCRIPTOR = 0xc0bc
+    CB_FORMAT_FILE_GROUP_DESCRIPTOR = 0xc0bc,
+    /* Registered formats: the IDs are ours to choose - the client goes
+     * by the names announced with them */
+    CB_FORMAT_PNG = 0xc0d0
 };
+
+/* What the current X selection can be converted to (g_clip_s2c.targets) */
+#define S2C_UTF8                (1 << 0)
+#define S2C_STRING              (1 << 1)
+#define S2C_BMP                 (1 << 2)
+#define S2C_PNG                 (1 << 3)
+
+/* Whether image/png and image/bmp can be converted into each other */
+#if defined(XRDP_PNG)
+#define S2C_PNG_CONVERTS        1
+#else
+#define S2C_PNG_CONVERTS        0
+#endif
 
 static int
 clipboard_send_data_response_failed(void);
@@ -604,124 +620,85 @@ clipboard_in_utf16_le_as_utf8(struct stream *s, char *text,
     return s->p - orig_p;
 }
 
-static char windows_native_format[] =
+/*****************************************************************************/
+/* One entry of a Format List PDU: a format ID and its name - empty for
+ * the predefined formats, the registered name for the others */
+static void
+clipboard_out_format(struct stream *s, int format_id, const char *name)
 {
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-};
+    int i;
+    int ended;
+
+    out_uint32_le(s, format_id);
+    if (g_cliprdr_flags & CB_USE_LONG_FORMAT_NAMES)
+    {
+        /* CLIPRDR_LONG_FORMAT_NAME */
+        clipboard_out_utf8_as_utf16_le(s, name);
+    }
+    else
+    {
+        /* CLIPRDR_SHORT_FORMAT_NAME: 32 bytes. The names used here are
+         * ASCII, so each character is one UTF-16 code unit */
+        ended = 0;
+        for (i = 0; i < 16; ++i)
+        {
+            if (i == 15 || name[i] == '\0')
+            {
+                ended = 1;
+            }
+            out_uint16_le(s, ended ? 0 : (unsigned char)name[i]);
+        }
+    }
+}
 
 /*****************************************************************************/
+/* Announce to the client what the X selection can be pasted as.
+ * XRDP_CB_FILE: a file list. XRDP_CB_NONE: nothing - an empty list.
+ * Otherwise: whatever g_clip_s2c.targets says the selection offers */
 static int
 clipboard_send_format_announce(int xrdp_clip_type)
 {
     struct stream *s;
     int size;
     int rv;
+    int targets;
     char *holdp;
 
-    LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce:");
+    LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce: "
+              "xrdp_clip_type %d targets 0x%x", xrdp_clip_type,
+              g_clip_s2c.targets);
     make_stream(s);
     init_stream(s, 8192);
     out_uint16_le(s, CB_FORMAT_LIST); /* 2 CLIPRDR_FORMAT_ANNOUNCE */
     out_uint16_le(s, 0); /* status */
     holdp = s->p;
     out_uint32_le(s, 0); /* set later */
-    if (g_cliprdr_flags & CB_USE_LONG_FORMAT_NAMES)
+    if (xrdp_clip_type == XRDP_CB_FILE)
     {
-        switch (xrdp_clip_type)
-        {
-            case XRDP_CB_NONE:
-                /* An empty list - the client must not go on offering
-                 * formats of an earlier X selection */
-                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce: XRDP_CB_NONE");
-                break;
-            case XRDP_CB_FILE:
-                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce: XRDP_CB_FILE");
-                /* canned response for "file" */
-                out_uint32_le(s, CB_FORMAT_FILE_GROUP_DESCRIPTOR);
-                clipboard_out_utf8_as_utf16_le(s, "FileGroupDescriptorW");
-                out_uint32_le(s, 0x0000c0ba);
-                clipboard_out_utf8_as_utf16_le(s, "FileContents");
-                out_uint32_le(s, 0x0000c0c1);
-                clipboard_out_utf8_as_utf16_le(s, "DropEffect");
-                break;
-            case XRDP_CB_BITMAP:
-                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce: XRDP_CB_BITMAP");
-                /* canned response for "bitmap" */
-                out_uint32_le(s, 0x0000c004);
-                clipboard_out_utf8_as_utf16_le(s, "Native");
-                out_uint32_le(s, 0x00000003);
-                clipboard_out_utf8_as_utf16_le(s, "");
-                out_uint32_le(s, 0x00000008);
-                clipboard_out_utf8_as_utf16_le(s, "");
-                out_uint32_le(s, 0x00000011);
-                clipboard_out_utf8_as_utf16_le(s, "");
-                break;
-            case XRDP_CB_TEXT:
-                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce: XRDP_CB_TEXT");
-                /* canned response for "bitmap" */
-                out_uint32_le(s, 0x0000000d);
-                clipboard_out_utf8_as_utf16_le(s, "");
-                out_uint32_le(s, 0x00000010);
-                clipboard_out_utf8_as_utf16_le(s, "");
-                out_uint32_le(s, 0x00000001);
-                clipboard_out_utf8_as_utf16_le(s, "");
-                out_uint32_le(s, 0x00000007);
-                clipboard_out_utf8_as_utf16_le(s, "");
-                break;
-            default:
-                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce: unknown "
-                          "xrdp_clip_type %d", xrdp_clip_type);
-                break;
-        }
+        clipboard_out_format(s, CB_FORMAT_FILE_GROUP_DESCRIPTOR,
+                             "FileGroupDescriptorW");
+        clipboard_out_format(s, 0x0000c0ba, "FileContents");
+        clipboard_out_format(s, 0x0000c0c1, "DropEffect");
     }
-    else /* old method */
+    else if (xrdp_clip_type != XRDP_CB_NONE)
     {
-        switch (xrdp_clip_type)
+        targets = g_clip_s2c.targets;
+        if (targets & (S2C_UTF8 | S2C_STRING))
         {
-            case XRDP_CB_NONE:
-                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce: XRDP_CB_NONE");
-                break;
-            case XRDP_CB_FILE:
-                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce: XRDP_CB_FILE");
-                /* canned response for "file" */
-                out_uint32_le(s, CB_FORMAT_FILE_GROUP_DESCRIPTOR);
-                out_uint8p(s, windows_native_format, sizeof(windows_native_format));
-                out_uint32_le(s, 0x0000c0ba);
-                out_uint8p(s, windows_native_format, sizeof(windows_native_format));
-                out_uint32_le(s, 0x0000c0c1);
-                out_uint8p(s, windows_native_format, sizeof(windows_native_format));
-                break;
-            case XRDP_CB_BITMAP:
-                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce: XRDP_CB_BITMAP");
-                /* canned response for "bitmap" */
-                out_uint32_le(s, 0x0000c004);
-                out_uint8p(s, windows_native_format, sizeof(windows_native_format));
-                out_uint32_le(s, 0x00000003);
-                out_uint8p(s, windows_native_format, sizeof(windows_native_format));
-                out_uint32_le(s, 0x00000008);
-                out_uint8p(s, windows_native_format, sizeof(windows_native_format));
-                out_uint32_le(s, 0x00000011);
-                out_uint8p(s, windows_native_format, sizeof(windows_native_format));
-                break;
-            case XRDP_CB_TEXT:
-                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce: XRDP_CB_TEXT");
-                /* canned response for "bitmap" */
-                out_uint32_le(s, 0x0000000d);
-                out_uint8p(s, windows_native_format, sizeof(windows_native_format));
-                out_uint32_le(s, 0x00000010);
-                out_uint8p(s, windows_native_format, sizeof(windows_native_format));
-                out_uint32_le(s, 0x00000001);
-                out_uint8p(s, windows_native_format, sizeof(windows_native_format));
-                out_uint32_le(s, 0x00000007);
-                out_uint8p(s, windows_native_format, sizeof(windows_native_format));
-                break;
-            default:
-                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce: unknown "
-                          "xrdp_clip_type %d", xrdp_clip_type);
-                break;
+            clipboard_out_format(s, CF_UNICODETEXT, "");
+            clipboard_out_format(s, 0x00000010, ""); /* CF_LOCALE */
+            clipboard_out_format(s, CF_TEXT, "");
+            clipboard_out_format(s, CF_OEMTEXT, "");
+        }
+        /* An image as a DIB, from which Windows derives the other bitmap
+         * formats itself, and as a PNG, which keeps transparency */
+        if ((targets & S2C_BMP) || (S2C_PNG_CONVERTS && (targets & S2C_PNG)))
+        {
+            clipboard_out_format(s, CF_DIB, "");
+        }
+        if ((targets & S2C_PNG) || (S2C_PNG_CONVERTS && (targets & S2C_BMP)))
+        {
+            clipboard_out_format(s, CB_FORMAT_PNG, "PNG");
         }
     }
     size = (int)(s->p - holdp);
@@ -1171,6 +1148,91 @@ clipboard_arm_request(Atom target)
 }
 
 /*****************************************************************************/
+/* Ask the X selection owner for target, to answer the client's request
+ * for format_id. None: the selection cannot provide it - fail at once */
+static void
+clipboard_s2c_request(int format_id, int xrdp_clip_type, Atom target)
+{
+    if (target == None)
+    {
+        LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_s2c_request: format 0x%x "
+                  "not available", format_id);
+        clipboard_send_data_response_failed();
+        return;
+    }
+    LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_s2c_request: format 0x%x from %s",
+              format_id, get_atom_text(target));
+    g_clip_s2c.format_id = format_id;
+    g_clip_s2c.xrdp_clip_type = xrdp_clip_type;
+    XConvertSelection(g_display, g_clipboard_atom, target,
+                      g_clip_property_atom, g_wnd, CurrentTime);
+    clipboard_arm_request(target);
+}
+
+/*****************************************************************************/
+/* Answer the client's request for an image with what the X selection
+ * delivered for target (image/bmp or image/png), converted if the client
+ * asked for the other kind. Always sends a response */
+static int
+clipboard_s2c_send_image(Atom target, const char *data, int data_size)
+{
+#if defined(XRDP_PNG)
+    char *converted = NULL;
+    int converted_size = 0;
+    int rv;
+#endif
+
+    if (data == NULL)
+    {
+        return clipboard_send_data_response_failed();
+    }
+    if (target == g_image_bmp_atom)
+    {
+        /* A BMP file; CF_DIB is the same without the file header */
+        if (data_size <= BMPFILEHEADER_LEN)
+        {
+            return clipboard_send_data_response_failed();
+        }
+        data += BMPFILEHEADER_LEN;
+        data_size -= BMPFILEHEADER_LEN;
+        if (g_clip_s2c.format_id != CB_FORMAT_PNG)
+        {
+            return clipboard_send_data_response_for_image(data, data_size);
+        }
+#if defined(XRDP_PNG)
+        if (clipboard_dib_to_png(data, data_size,
+                                 &converted, &converted_size) == 0)
+        {
+            rv = clipboard_send_data_response_for_image(converted,
+                 converted_size);
+            g_free(converted);
+            return rv;
+        }
+#endif
+    }
+    else if (target == g_image_png_atom)
+    {
+        if (g_clip_s2c.format_id != CF_DIB)
+        {
+            return clipboard_send_data_response_for_image(data, data_size);
+        }
+#if defined(XRDP_PNG)
+        if (clipboard_png_to_dib(data, data_size,
+                                 &converted, &converted_size) == 0)
+        {
+            rv = clipboard_send_data_response_for_image(converted,
+                 converted_size);
+            g_free(converted);
+            return rv;
+        }
+#endif
+    }
+    LOG(LOG_LEVEL_WARNING, "Clipboard image from X (%s) could not be "
+        "converted for the client", get_atom_text(target));
+    return clipboard_send_data_response_failed();
+}
+
+/*****************************************************************************/
 /* sent from server to client
  * sent by recipient of CB_FORMAT_LIST; used to request data for one
  * of the formats that was listed in CB_FORMAT_LIST */
@@ -1179,6 +1241,7 @@ clipboard_process_data_request(struct stream *s, int clip_msg_status,
                                int clip_msg_len)
 {
     int requestedFormatId;
+    Atom target = None;
 
     LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_process_data_request: "
               "CLIPRDR_DATA_REQUEST");
@@ -1208,38 +1271,39 @@ clipboard_process_data_request(struct stream *s, int clip_msg_status,
             }
             break;
         case CF_DIB:
-            if ((g_clip_s2c.xrdp_clip_type == XRDP_CB_BITMAP) && g_clip_s2c.converted)
+            /* From image/bmp, or converted from image/png */
+            if (g_clip_s2c.targets & S2C_BMP)
             {
-                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_process_data_request: CF_DIB");
-                clipboard_send_data_response(XRDP_CB_BITMAP, g_clip_s2c.data,
-                                             g_clip_s2c.total_bytes);
+                target = g_image_bmp_atom;
             }
-            else
+            else if (S2C_PNG_CONVERTS && (g_clip_s2c.targets & S2C_PNG))
             {
-                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_process_data_request: CF_DIB, "
-                          "calling XConvertSelection to g_image_bmp_atom");
-                g_clip_s2c.xrdp_clip_type = XRDP_CB_BITMAP;
-                XConvertSelection(g_display, g_clipboard_atom, g_image_bmp_atom,
-                                  g_clip_property_atom, g_wnd, CurrentTime);
-                clipboard_arm_request(g_image_bmp_atom);
+                target = g_image_png_atom;
             }
+            clipboard_s2c_request(CF_DIB, XRDP_CB_BITMAP, target);
+            break;
+        case CB_FORMAT_PNG:
+            /* From image/png, or converted from image/bmp */
+            if (g_clip_s2c.targets & S2C_PNG)
+            {
+                target = g_image_png_atom;
+            }
+            else if (S2C_PNG_CONVERTS && (g_clip_s2c.targets & S2C_BMP))
+            {
+                target = g_image_bmp_atom;
+            }
+            clipboard_s2c_request(CB_FORMAT_PNG, XRDP_CB_BITMAP, target);
             break;
         case CF_UNICODETEXT:
-            if ((g_clip_s2c.xrdp_clip_type == XRDP_CB_TEXT) && g_clip_s2c.converted)
+            if (g_clip_s2c.targets & S2C_UTF8)
             {
-                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_process_data_request: CF_UNICODETEXT");
-                clipboard_send_data_response(XRDP_CB_TEXT, g_clip_s2c.data,
-                                             g_clip_s2c.total_bytes);
+                target = g_utf8_atom;
             }
-            else
+            else if (g_clip_s2c.targets & S2C_STRING)
             {
-                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_process_data_request: CF_UNICODETEXT, "
-                          "calling XConvertSelection to g_utf8_atom");
-                g_clip_s2c.xrdp_clip_type = XRDP_CB_TEXT;
-                XConvertSelection(g_display, g_clipboard_atom, g_utf8_atom,
-                                  g_clip_property_atom, g_wnd, CurrentTime);
-                clipboard_arm_request(g_utf8_atom);
+                target = XA_STRING;
             }
+            clipboard_s2c_request(CF_UNICODETEXT, XRDP_CB_TEXT, target);
             break;
         default:
             LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_process_data_request: unknown type %d",
@@ -1891,6 +1955,10 @@ clipboard_target_name(Atom target)
     {
         return "image/bmp";
     }
+    if (target == g_image_png_atom)
+    {
+        return "image/png";
+    }
     if (target == g_file_atom1)
     {
         return "text/uri-list";
@@ -1912,8 +1980,8 @@ static int
 clipboard_is_known_target(Atom target)
 {
     return (target == g_utf8_atom) || (target == XA_STRING) ||
-           (target == g_image_bmp_atom) || (target == g_file_atom1) ||
-           (target == g_file_atom2);
+           (target == g_image_bmp_atom) || (target == g_image_png_atom) ||
+           (target == g_file_atom1) || (target == g_file_atom2);
 }
 
 /*****************************************************************************/
@@ -1943,6 +2011,8 @@ clipboard_event_selection_notify(XEvent *xevent)
     int got_string;
     int got_utf8;
     int got_bmp_image;
+    int got_png_image;
+    int targets;
     int send_format_announce;
     Atom got_file_atom;
     Atom atom;
@@ -1957,6 +2027,8 @@ clipboard_event_selection_notify(XEvent *xevent)
     got_string = 0;
     got_utf8 = 0;
     got_bmp_image = 0;
+    got_png_image = 0;
+    targets = 0;
     got_file_atom = 0;
     send_format_announce = 0;
     rv = 0;
@@ -2065,6 +2137,10 @@ clipboard_event_selection_notify(XEvent *xevent)
                         {
                             got_bmp_image = 1;
                         }
+                        else if (atom == g_image_png_atom)
+                        {
+                            got_png_image = 1;
+                        }
                         else if ((atom == g_file_atom1) || (atom == g_file_atom2))
                         {
                             LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_event_selection_notify: file");
@@ -2150,28 +2226,24 @@ clipboard_event_selection_notify(XEvent *xevent)
 
                 }
             }
-            else if (lxevent->target == g_image_bmp_atom)
+            else if ((lxevent->target == g_image_bmp_atom) ||
+                     (lxevent->target == g_image_png_atom))
             {
-                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_event_selection_notify: image/bmp "
-                          "data_size %d", data_size);
-                if ((g_clip_s2c.incr_in_progress == 0) && (data_size > 14))
+                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_event_selection_notify: %s "
+                          "data_size %d", get_atom_text(lxevent->target),
+                          data_size);
+                if ((g_clip_s2c.incr_in_progress == 0) && (data_size > 0))
                 {
-                    g_free(g_clip_s2c.data);
-
                     if (g_cfg->restrict_outbound_clipboard & CLIP_RESTRICT_IMAGE)
                     {
                         LOG(LOG_LEVEL_DEBUG,
-                            "outbound clipboard(image) image/bmp is restricted because of config");
+                            "outbound clipboard(image) %s is restricted because of config",
+                            get_atom_text(lxevent->target));
                     }
                     else
                     {
-                        g_clip_s2c.total_bytes = data_size;
-                        g_clip_s2c.data = (char *) g_malloc(data_size, 0);
-                        g_memcpy(g_clip_s2c.data, data, data_size);
-                        clipboard_send_data_response_for_image(g_clip_s2c.data + 14,
-                                                               data_size - 14);
+                        clipboard_s2c_send_image(lxevent->target, data, data_size);
                     }
-
                 }
             }
             else if (lxevent->target == g_file_atom1)
@@ -2250,6 +2322,7 @@ clipboard_event_selection_notify(XEvent *xevent)
         else
         {
             g_clip_s2c.type = got_file_atom;
+            g_clip_s2c.targets = 0;
             g_clip_s2c.xrdp_clip_type = XRDP_CB_FILE;
             g_clip_s2c.converted = 0;
             g_clip_s2c.clip_time = lxevent->time;
@@ -2257,65 +2330,67 @@ clipboard_event_selection_notify(XEvent *xevent)
         }
 
     }
-    else if (got_utf8)
+    else if (got_utf8 || got_string || got_bmp_image || got_png_image)
     {
-
-        if (g_cfg->restrict_outbound_clipboard & CLIP_RESTRICT_TEXT)
+        /* Everything the selection offers is announced together - text
+         * and an image, say, from a browser */
+        targets = 0;
+        if (got_utf8 || got_string)
         {
-            LOG(LOG_LEVEL_DEBUG,
-                "outbound clipboard(text) is restricted because of config");
+            if (g_cfg->restrict_outbound_clipboard & CLIP_RESTRICT_TEXT)
+            {
+                LOG(LOG_LEVEL_DEBUG,
+                    "outbound clipboard(text) is restricted because of config");
+            }
+            else
+            {
+                /*
+                 * In most cases, when copying text, TARGETS atom and UTF8_STRING atom exists,
+                 * it means that STRING alone is rarely seen in recent platforms.
+                 * Use echo foo | xclip -selection clipboard -noutf8 to reproduce it.
+                 */
+                targets |= got_utf8 ? S2C_UTF8 : S2C_STRING;
+            }
         }
-        else
+        if (got_bmp_image || got_png_image)
         {
-            g_clip_s2c.type = g_utf8_atom;
-            g_clip_s2c.xrdp_clip_type = XRDP_CB_TEXT;
+            if (g_cfg->restrict_outbound_clipboard & CLIP_RESTRICT_IMAGE)
+            {
+                LOG(LOG_LEVEL_DEBUG,
+                    "outbound clipboard(image) is restricted because of config");
+            }
+            else
+            {
+                targets |= got_bmp_image ? S2C_BMP : 0;
+                targets |= got_png_image ? S2C_PNG : 0;
+            }
+        }
+
+        if (targets != 0)
+        {
+            g_clip_s2c.targets = targets;
+            if (targets & S2C_UTF8)
+            {
+                g_clip_s2c.type = g_utf8_atom;
+            }
+            else if (targets & S2C_STRING)
+            {
+                g_clip_s2c.type = XA_STRING;
+            }
+            else if (targets & S2C_BMP)
+            {
+                g_clip_s2c.type = g_image_bmp_atom;
+            }
+            else
+            {
+                g_clip_s2c.type = g_image_png_atom;
+            }
+            g_clip_s2c.xrdp_clip_type =
+                (targets & (S2C_UTF8 | S2C_STRING)) ? XRDP_CB_TEXT : XRDP_CB_BITMAP;
             g_clip_s2c.converted = 0;
             g_clip_s2c.clip_time = lxevent->time;
             send_format_announce = 1;
         }
-
-    }
-    else if (got_string)
-    {
-
-        /*
-         * In most cases, when copying text, TARGETS atom and UTF8_STRING atom exists,
-         * it means that this code block which checks STRING atom might not be never executed
-         * in recent platforms.
-         * Use echo foo | xclip -selection clipboard -noutf8 to reproduce it.
-         */
-        if (g_cfg->restrict_outbound_clipboard & CLIP_RESTRICT_TEXT)
-        {
-            LOG(LOG_LEVEL_DEBUG,
-                "outbound clipboard(text) is restricted because of config");
-        }
-        else
-        {
-            g_clip_s2c.type = XA_STRING;
-            g_clip_s2c.xrdp_clip_type = XRDP_CB_TEXT;
-            g_clip_s2c.converted = 0;
-            g_clip_s2c.clip_time = lxevent->time;
-            send_format_announce = 1;
-        }
-
-    }
-    else if (got_bmp_image)
-    {
-
-        if (g_cfg->restrict_outbound_clipboard & CLIP_RESTRICT_IMAGE)
-        {
-            LOG(LOG_LEVEL_DEBUG,
-                "outbound clipboard(image) is restricted because of config");
-        }
-        else
-        {
-            g_clip_s2c.type = g_image_bmp_atom;
-            g_clip_s2c.xrdp_clip_type = XRDP_CB_BITMAP;
-            g_clip_s2c.converted = 0;
-            g_clip_s2c.clip_time = lxevent->time;
-            send_format_announce = 1;
-        }
-
     }
 
     if (send_format_announce)
@@ -2334,6 +2409,7 @@ clipboard_event_selection_notify(XEvent *xevent)
         LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_event_selection_notify: nothing "
                   "on the X clipboard can be transferred");
         g_clip_s2c.xrdp_clip_type = XRDP_CB_NONE;
+        g_clip_s2c.targets = 0;
         g_clip_s2c.converted = 0;
         g_clip_s2c.clip_time = lxevent->time;
         if (clipboard_send_format_announce(XRDP_CB_NONE) != 0)
@@ -2783,7 +2859,6 @@ clipboard_event_property_notify(XEvent *xevent)
     int new_data_len;
     int data_bytes;
     char *cptr;
-    char reason[128];
 
     LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_event_property_notify: PropertyNotify .window %ld "
               ".state %d .atom %ld %s", xevent->xproperty.window,
@@ -2857,26 +2932,12 @@ clipboard_event_property_notify(XEvent *xevent)
             LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_event_property_notify: INCR done");
             /* clipboard INCR cycle has completed */
             g_clip_s2c.incr_in_progress = 0;
-            if (g_clip_s2c.type == g_image_bmp_atom)
+            if ((g_clip_s2c.type == g_image_bmp_atom) ||
+                    (g_clip_s2c.type == g_image_png_atom))
             {
                 g_clip_s2c.xrdp_clip_type = XRDP_CB_BITMAP;
-                //LOG_DEVEL_HEXDUMP(LOG_LEVEL_TRACE, "", g_last_clip_data, 64);
-                if ((g_clip_s2c.data == 0) || (g_clip_s2c.total_bytes <= 14))
-                {
-                    /* no more than the 14 byte BMP file header: the
-                       length below would be zero or negative */
-                    g_snprintf(reason, sizeof(reason),
-                               "the image/bmp reply carried no usable data "
-                               "(%d bytes)", g_clip_s2c.total_bytes);
-                    clipboard_fail_pending_request(reason);
-                }
-                else
-                {
-                    /* skip header */
-                    clipboard_send_data_response(g_clip_s2c.xrdp_clip_type,
-                                                 g_clip_s2c.data + 14,
-                                                 g_clip_s2c.total_bytes - 14);
-                }
+                clipboard_s2c_send_image(g_clip_s2c.type, g_clip_s2c.data,
+                                         g_clip_s2c.total_bytes);
             }
             else if ((g_clip_s2c.type == XA_STRING) ||
                      (g_clip_s2c.type == g_utf8_atom))

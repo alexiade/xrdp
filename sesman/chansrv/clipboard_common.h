@@ -37,6 +37,8 @@ struct clip_s2c /* server to client, pasting from linux app to mstsc */
     Atom property; /* XRDP_CLIP_PROPERTY_ATOM, _QT_SELECTION, ... */
     int xrdp_clip_type; /* XRDP_CB_TEXT, XRDP_CB_BITMAP, XRDP_CB_FILE, ... */
     int converted;
+    int targets; /* what the X selection can be converted to (S2C_*) */
+    int format_id; /* the clipboard format the client asked for */
     Time clip_time;
     int in_request; /* a data request has been received from client */
     int request_serial; /* ties a pending request to its timeout */
