@@ -627,6 +627,11 @@ clipboard_send_format_announce(int xrdp_clip_type)
     {
         switch (xrdp_clip_type)
         {
+            case XRDP_CB_NONE:
+                /* An empty list - the client must not go on offering
+                 * formats of an earlier X selection */
+                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce: XRDP_CB_NONE");
+                break;
             case XRDP_CB_FILE:
                 LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce: XRDP_CB_FILE");
                 /* canned response for "file" */
@@ -671,6 +676,9 @@ clipboard_send_format_announce(int xrdp_clip_type)
     {
         switch (xrdp_clip_type)
         {
+            case XRDP_CB_NONE:
+                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce: XRDP_CB_NONE");
+                break;
             case XRDP_CB_FILE:
                 LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce: XRDP_CB_FILE");
                 /* canned response for "file" */
@@ -2233,6 +2241,22 @@ clipboard_event_selection_notify(XEvent *xevent)
     if (send_format_announce)
     {
         if (clipboard_send_format_announce(g_clip_s2c.xrdp_clip_type) != 0)
+        {
+            rv = 4;
+        }
+    }
+    else if (lxevent->target == g_targets_atom)
+    {
+        /* The new owner offers nothing we can pass on, or would not
+         * say what it offers. Tell the client, rather than leave it
+         * offering the formats of the previous selection - it would
+         * ask for data the X side no longer has */
+        LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_event_selection_notify: nothing "
+                  "on the X clipboard can be transferred");
+        g_clip_s2c.xrdp_clip_type = XRDP_CB_NONE;
+        g_clip_s2c.converted = 0;
+        g_clip_s2c.clip_time = lxevent->time;
+        if (clipboard_send_format_announce(XRDP_CB_NONE) != 0)
         {
             rv = 4;
         }
