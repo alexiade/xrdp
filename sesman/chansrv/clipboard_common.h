@@ -23,6 +23,7 @@
 #include "parse.h"
 
 /* these are the supported general types */
+#define XRDP_CB_NONE   0 /* nothing on the clipboard can be transferred */
 #define XRDP_CB_TEXT   1
 #define XRDP_CB_BITMAP 2
 #define XRDP_CB_FILE   3

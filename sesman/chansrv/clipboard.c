@@ -265,6 +265,9 @@ enum
     CB_FORMAT_FILE_GROUP_DESCRIPTOR = 0xc0bc
 };
 
+static int
+clipboard_send_data_response_failed(void);
+
 
 /*****************************************************************************/
 static char *
@@ -625,6 +628,11 @@ clipboard_send_format_announce(int xrdp_clip_type)
     {
         switch (xrdp_clip_type)
         {
+            case XRDP_CB_NONE:
+                /* An empty list - the client must not go on offering
+                 * formats of an earlier X selection */
+                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce: XRDP_CB_NONE");
+                break;
             case XRDP_CB_FILE:
                 LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce: XRDP_CB_FILE");
                 /* canned response for "file" */
@@ -669,6 +677,9 @@ clipboard_send_format_announce(int xrdp_clip_type)
     {
         switch (xrdp_clip_type)
         {
+            case XRDP_CB_NONE:
+                LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce: XRDP_CB_NONE");
+                break;
             case XRDP_CB_FILE:
                 LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_format_announce: XRDP_CB_FILE");
                 /* canned response for "file" */
@@ -814,7 +825,8 @@ clipboard_send_data_response(int xrdp_clip_type, const char *data, int data_size
     {
         LOG_DEVEL(LOG_LEVEL_ERROR, "clipboard_send_data_response: data is nil");
     }
-    return 0;
+    /* The client is waiting for a response - it must get one */
+    return clipboard_send_data_response_failed();
 }
 
 /*****************************************************************************/
@@ -2172,6 +2184,22 @@ clipboard_event_selection_notify(XEvent *xevent)
             rv = 4;
         }
     }
+    else if (lxevent->target == g_targets_atom)
+    {
+        /* The new owner offers nothing we can pass on, or would not
+         * say what it offers. Tell the client, rather than leave it
+         * offering the formats of the previous selection - it would
+         * ask for data the X side no longer has */
+        LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_event_selection_notify: nothing "
+                  "on the X clipboard can be transferred");
+        g_clip_s2c.xrdp_clip_type = XRDP_CB_NONE;
+        g_clip_s2c.converted = 0;
+        g_clip_s2c.clip_time = lxevent->time;
+        if (clipboard_send_format_announce(XRDP_CB_NONE) != 0)
+        {
+            rv = 4;
+        }
+    }
 
     /* This conversion may have been started for a client data request. If
        none of the branches above sent a response, answer now instead of
@@ -2632,10 +2660,20 @@ clipboard_event_property_notify(XEvent *xevent)
             {
                 g_clip_s2c.xrdp_clip_type = XRDP_CB_BITMAP;
                 //LOG_DEVEL_HEXDUMP(LOG_LEVEL_TRACE, "", g_last_clip_data, 64);
-                /* skip header */
-                clipboard_send_data_response(g_clip_s2c.xrdp_clip_type,
-                                             g_clip_s2c.data + 14,
-                                             g_clip_s2c.total_bytes - 14);
+                if (g_clip_s2c.data == NULL || g_clip_s2c.total_bytes <= 14)
+                {
+                    LOG_DEVEL(LOG_LEVEL_ERROR, "clipboard_event_property_notify: "
+                              "image/bmp too short (%d bytes)",
+                              g_clip_s2c.total_bytes);
+                    clipboard_send_data_response_failed();
+                }
+                else
+                {
+                    /* skip header */
+                    clipboard_send_data_response(g_clip_s2c.xrdp_clip_type,
+                                                 g_clip_s2c.data + 14,
+                                                 g_clip_s2c.total_bytes - 14);
+                }
             }
             else if ((g_clip_s2c.type == XA_STRING) ||
                      (g_clip_s2c.type == g_utf8_atom))
