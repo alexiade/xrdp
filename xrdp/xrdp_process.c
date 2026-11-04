@@ -83,6 +83,13 @@ xrdp_process_loop(struct xrdp_process *self, struct stream *s)
                wm::login_state is WMLS_RESET and wm::login_state_event is set
                so xrdp_wm_init should be called by xrdp_wm_check_wait_objs
                */
+            if (self->wm != 0 && self->last_sync_saved)
+            {
+                /* toggle key state sent before the wm existed */
+                xrdp_wm_key_sync(self->wm, self->last_sync_device_flags,
+                                 self->last_sync_key_flags);
+                self->last_sync_saved = 0;
+            }
         }
     }
 

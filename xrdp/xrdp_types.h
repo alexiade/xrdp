@@ -615,6 +615,10 @@ struct xrdp_process
     //int app_sck;
     tbus done_event;
     int session_id;
+    /* Last TS_SYNC_EVENT from before wm was created, applied to it then */
+    int last_sync_saved;
+    int last_sync_key_flags;
+    int last_sync_device_flags;
 };
 
 /* rdp listener */

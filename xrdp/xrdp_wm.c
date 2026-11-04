@@ -2191,6 +2191,14 @@ callback(struct xrdp_process *id, int msg, intptr_t param1, intptr_t param2,
 
     if (wm == 0)
     {
+        /* The client may send its toggle key state before the connection
+         * finalization is complete. Keep the last one for the wm */
+        if (msg == RDP_INPUT_SYNCHRONIZE)
+        {
+            id->last_sync_saved = 1;
+            id->last_sync_key_flags = param1;
+            id->last_sync_device_flags = param3;
+        }
         return 0;
     }
 
